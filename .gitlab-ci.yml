@@ -1,0 +1,13 @@
+stages:
+  - test
+
+test-syntax:
+  stage: test
+  image: python:3.11-slim
+  tags:
+    - docker
+  script:
+    - python3 -m py_compile show.py
+    - test -f index.html
+    - test -f README.md
+    - bash -n start-nim

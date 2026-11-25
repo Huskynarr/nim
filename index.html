@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nim</title>
+<!--
+  Nim – Strategiespiel gegen den Computer für den Galadriel-Kiosk.
+  Umgesetzt nach dem Besuchervorschlag „Mehr Spiele wie Sudoku oder 2048
+  für Zwischendurch“.
+
+  Mathematischer Kern: Satz von Bouton (1901). Eine Stellung ist für den
+  Spieler am Zug genau dann verloren, wenn die Nim-Summe (bitweises XOR
+  aller Reihengrößen) 0 ist. Der Profi-Gegner und der „Tipp“ nutzen das.
+  Die Spiellogik steht zwischen LOGIC-START/LOGIC-END als reine Funktionen
+  (auch in node testbar).
+-->
+<style>
+  :root {
+    --blue: #344A9A;
+    --blue-dark: #293b7a;
+    --orange: #e67e22;
+    --green: #27ae60;
+    --bg: #f4f6fb;
+    --card: #ffffff;
+    --text: #1f2937;
+    --muted: #5a6270;
+    --line: #d4d9e6;
+    --wood1: #d9a066;
+    --wood2: #b9773d;
+  }
+  * { box-sizing: border-box; -webkit-user-select: none; user-select: none;
+      -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+    font-family: 'Inter', 'DejaVu Sans', sans-serif; touch-action: manipulation;
+  }
+  #app {
+    position: fixed; inset: 0; display: grid;
+    grid-template-columns: minmax(300px, 420px) 1fr minmax(340px, 440px);
+    grid-template-rows: 120px minmax(0, 1fr) auto;
+    grid-template-areas: "hud hud hud" "left board side" "bar bar bar";
+  }
+  #hud { grid-area: hud; padding: 22px 32px 0; }
+  #hud h1 { margin: 0; font-size: 44px; font-weight: 800; color: var(--blue); }
+  #hud p  { margin: 4px 0 0; font-size: 19px; color: var(--muted); }
+
+  /* ---------- Spielfeld ---------- */
+  #board {
+    grid-area: board; display: flex; flex-direction: column; justify-content: center;
+    align-items: center; padding: 0 20px; position: relative;
+  }
+  #rows { display: flex; flex-direction: column; gap: 2.2vh; width: min(100%, 860px); }
+  .row {
+    display: flex; align-items: center; gap: 22px; padding: 1vh 18px; border-radius: 18px;
+    background: rgba(52, 74, 154, .06); min-height: calc(var(--sh, 14vh) + 2vh);
+  }
+  .row .label {
+    width: 70px; flex: none; text-align: center; font-size: 30px; font-weight: 800; color: var(--blue);
+  }
+  .row .label small { display: block; font-size: 14px; font-weight: 600; color: var(--muted); }
+  /* Größen werden per JS (fitSticks) an die verfügbare Fläche angepasst */
+  .sticks { display: flex; gap: var(--sg, 26px); align-items: center; min-height: var(--sh, 14vh); }
+  .stick {
+    width: var(--sw, 40px); height: var(--sh, 14vh); border-radius: calc(var(--sw, 40px) / 2);
+    cursor: pointer; position: relative; flex: none;
+    background: linear-gradient(90deg, var(--wood2), var(--wood1) 40%, var(--wood2));
+    box-shadow: 0 4px 0 rgba(0,0,0,.18);
+    transition: transform .25s, opacity .45s, box-shadow .2s, background .2s;
+  }
+  /* große unsichtbare Trefferfläche für Finger */
+  .stick::before { content: ''; position: absolute; inset: -12px -10px; }
+  .stick::after {
+    content: ''; position: absolute; left: 12%; right: 12%; top: 0;
+    height: calc(var(--sw, 40px) * .7); border-radius: calc(var(--sw, 40px) / 2);
+    background: #c0392b;
+  }
+  .stick.sel  { transform: translateY(-12px); box-shadow: 0 0 0 5px var(--orange), 0 10px 14px rgba(0,0,0,.25); }
+  .stick.hint { box-shadow: 0 0 0 5px var(--green), 0 6px 10px rgba(0,0,0,.2); }
+  .stick.cpu  { box-shadow: 0 0 0 5px var(--blue), 0 6px 10px rgba(0,0,0,.2); transform: translateY(-12px); }
+  .stick.leaving { opacity: 0; transform: translateY(-60px) rotate(12deg); }
+  .row.empty .label { color: #b6bccb; }
+
+  #banner {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    background: var(--card); border-radius: 24px; padding: 30px 46px; text-align: center;
+    box-shadow: 0 20px 60px rgba(0,0,0,.25); border: 3px solid var(--blue); display: none; min-width: 460px;
+  }
+  #banner.show { display: block; }
+  #banner h2 { margin: 0 0 8px; font-size: 40px; color: var(--blue); }
+  #banner p { margin: 0 0 20px; font-size: 20px; color: var(--muted); }
+
+  /* ---------- Seitenleiste ---------- */
+  #side { grid-area: side; padding: 0 28px 0 8px; display: flex; flex-direction: column; gap: 16px; overflow: hidden; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 16px 18px; }
+  #score { display: flex; justify-content: space-around; align-items: center; text-align: center; }
+  #score .n { font-size: 46px; font-weight: 800; }
+  #score .who { font-size: 16px; color: var(--muted); font-weight: 600; }
+  #score .colon { font-size: 40px; color: #b6bccb; font-weight: 800; }
+  #status { font-size: 22px; font-weight: 700; text-align: center; min-height: 64px;
+            display: flex; align-items: center; justify-content: center; white-space: pre-line; }
+  #status.demo { font-size: 17px; font-weight: 600; color: var(--blue); background: #eef1fa; }
+  .opt h3 { margin: 0 0 8px; font-size: 15px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+  .seg { display: flex; gap: 8px; flex-wrap: wrap; }
+  .seg button { flex: 1 1 auto; height: 52px; font-size: 17px; padding: 0 12px; }
+
+  /* ---------- Tipp ---------- */
+  #left { grid-area: left; padding: 0 8px 0 28px; display: flex; align-items: center; min-width: 0; }
+  #hintCard { display: none; width: 100%; }
+  #hintCard.show { display: block; }
+  #hintCard h3 { margin: 0 0 10px; color: var(--green); font-size: 22px; }
+  table.bin { border-collapse: collapse; width: 100%; font-size: 21px; }
+  table.bin td, table.bin th { padding: 6px 8px; text-align: center; }
+  table.bin th { font-size: 14px; color: var(--muted); }
+  table.bin td.bit { font-family: 'DejaVu Sans Mono', monospace; font-weight: 700; width: 38px; }
+  table.bin td.bit.odd { background: #fff2e0; color: var(--orange); }
+  table.bin tr.sum td { border-top: 3px solid var(--text); font-weight: 800; }
+  table.bin td.dec { color: var(--muted); }
+  #hintText { margin-top: 12px; font-size: 18px; line-height: 1.45; }
+
+  /* ---------- Leiste unten ---------- */
+  #bar {
+    grid-area: bar; display: flex; gap: 12px; align-items: center; justify-content: center;
+    flex-wrap: wrap; padding: 0 16px 18px;
+  }
+  .sep { width: 2px; height: 44px; background: var(--line); margin: 0 4px; }
+  button {
+    font: inherit; font-size: 19px; font-weight: 700; color: var(--blue);
+    background: #fff; border: 2px solid var(--blue); border-radius: 14px;
+    padding: 0 22px; height: 60px; min-width: 60px; cursor: pointer;
+  }
+  button:active { transform: scale(.96); }
+  button:disabled { opacity: .35; }
+  button.on, button.primary { background: var(--blue); color: #fff; }
+  button.take { background: var(--orange); border-color: var(--orange); color: #fff; min-width: 200px; }
+  button.info { background: var(--orange); border-color: var(--orange); color: #fff; }
+
+  /* ---------- Erklärung ---------- */
+  #info {
+    position: fixed; inset: 0; background: rgba(20, 26, 50, .55); display: none;
+    align-items: center; justify-content: center; padding: 24px; z-index: 10;
+  }
+  #info.open { display: flex; }
+  #info .box {
+    background: #fff; border-radius: 22px; max-width: 1100px; width: 100%; max-height: 92vh;
+    overflow: auto; padding: 34px 44px 28px; border-top: 10px solid var(--blue);
+  }
+  #info h2 { margin: 0 0 12px; font-size: 34px; color: var(--blue); }
+  #info h3 { margin: 20px 0 6px; font-size: 23px; color: var(--orange); }
+  #info p, #info li { font-size: 19px; line-height: 1.5; color: #374151; margin: 4px 0; }
+  #info .eq { font-family: 'DejaVu Sans Mono', monospace; font-size: 22px; text-align: center; margin: 10px 0; color: var(--text); }
+  #info .foot { margin-top: 22px; font-size: 16px; color: var(--muted); }
+
+  /* ---------- Vorführmodus ---------- */
+  #attract {
+    /* Querformat: mittig in der Titelzeile, verdeckt keine Hölzchen; X oben rechts bleibt frei */
+    position: fixed; left: 0; right: 0; top: 26px; margin: 0 auto; width: fit-content;
+    max-width: calc(100vw - 2 * 330px);
+    background: var(--blue); color: #fff; font-size: 24px; font-weight: 800; padding: 16px 36px;
+    text-align: center;
+    border-radius: 40px; box-shadow: 0 10px 30px rgba(0,0,0,.3); display: none; z-index: 5;
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  #attract.show { display: block; }
+  @keyframes pulse { 50% { transform: scale(1.05); } }
+
+  /* ---------- Rückfrage ---------- */
+  #confirm {
+    position: fixed; inset: 0; background: rgba(20, 26, 50, .55); display: none;
+    align-items: center; justify-content: center; padding: 24px; z-index: 12;
+  }
+  #confirm.open { display: flex; }
+  #confirm .box {
+    background: #fff; border-radius: 22px; padding: 34px 40px 30px; max-width: 640px; width: 100%;
+    text-align: center; border-top: 10px solid var(--orange); box-shadow: 0 20px 60px rgba(0,0,0,.3);
+  }
+  #confirm p { font-size: 24px; font-weight: 700; margin: 0 0 26px; line-height: 1.4; }
+  #confirm .btns { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+  #confirm .btns button { min-width: 220px; height: 68px; font-size: 21px; }
+
+  /* ---------- Kleinere Querformate (z. B. 1280×800, 1366×768) ----------
+     Tipp-Spalte nimmt nur Platz ein, wenn der Tipp offen ist. */
+  @media (max-width: 1599px) and (orientation: landscape) {
+    #app { grid-template-columns: auto minmax(0, 1fr) minmax(300px, 360px); }
+    #left { padding: 0 0 0 20px; }
+    #left:not(.open) { padding: 0; }
+    #hintCard { width: 320px; }
+    #side { padding: 0 20px 0 4px; }
+  }
+  /* Niedrige Bildschirme: alles kompakter */
+  @media (max-height: 900px) and (orientation: landscape) {
+    #app { grid-template-rows: 92px minmax(0, 1fr) auto; }
+    #hud { padding: 14px 24px 0; }
+    #hud h1 { font-size: 34px; }
+    #hud p { font-size: 16px; }
+    #side { gap: 10px; }
+    .card { padding: 10px 14px; }
+    #score .n { font-size: 34px; }
+    #score .colon { font-size: 30px; }
+    #status { font-size: 18px; min-height: 52px; }
+    #status.demo { font-size: 15px; }
+    .opt h3 { font-size: 13px; margin-bottom: 5px; }
+    .seg button { height: 44px; font-size: 15px; padding: 0 8px; }
+    #bar { padding-bottom: 12px; gap: 10px; }
+    #bar button { height: 54px; font-size: 17px; padding: 0 16px; }
+    button.take { min-width: 160px; }
+    table.bin { font-size: 18px; }
+    table.bin td, table.bin th { padding: 4px 6px; }
+    #hintText { font-size: 16px; }
+    #attract { top: 16px; font-size: 20px; padding: 12px 28px; }
+  }
+  /* Hochformat (z. B. 1080×1920): Spielfeld oben, Optionen darunter */
+  @media (orientation: portrait) {
+    #app {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: 120px minmax(0, 1fr) auto auto auto;
+      grid-template-areas: "hud" "board" "left" "side" "bar";
+    }
+    #left { padding: 0 28px; }
+    #left:not(.open) { padding: 0; }
+    #hintCard { margin: 0 auto 14px; max-width: 720px; }
+    #side {
+      padding: 0 28px 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+    }
+    #score, #status { grid-column: span 1; }
+    #attract { top: 128px; max-width: calc(100vw - 48px); }
+    body.demo #board { padding-top: 90px; }   /* Platz für die Pille über den Reihen */
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="hud">
+    <h1 data-t="title"></h1>
+    <p data-t="subtitle"></p>
+  </div>
+
+  <div id="left">
+    <div id="hintCard" class="card">
+      <h3 data-t="hintTitle"></h3>
+      <table class="bin" id="binTable"></table>
+      <div id="hintText"></div>
+    </div>
+  </div>
+
+  <div id="board">
+    <div id="rows"></div>
+    <div id="banner">
+      <h2 id="bannerTitle"></h2>
+      <p id="bannerText"></p>
+      <button class="primary" id="again" data-t="again"></button>
+    </div>
+  </div>
+
+  <div id="side">
+    <div class="card" id="score">
+      <div><div class="n" id="sHuman">0</div><div class="who" data-t="you"></div></div>
+      <div class="colon">:</div>
+      <div><div class="n" id="sCpu">0</div><div class="who" data-t="cpu"></div></div>
+    </div>
+    <div class="card" id="status"></div>
+    <div class="opt">
+      <h3 data-t="level"></h3>
+      <div class="seg" id="optLevel">
+        <button data-v="easy" data-t="easy"></button>
+        <button data-v="medium" data-t="medium"></button>
+        <button data-v="pro" data-t="pro"></button>
+      </div>
+    </div>
+    <div class="opt">
+      <h3 data-t="setup"></h3>
+      <div class="seg" id="optSetup">
+        <button data-v="3-4-5">3-4-5</button>
+        <button data-v="1-3-5-7">1-3-5-7</button>
+        <button data-v="2-4-6-8">2-4-6-8</button>
+        <button data-v="random" data-t="random"></button>
+      </div>
+    </div>
+    <div class="opt">
+      <h3 data-t="variant"></h3>
+      <div class="seg" id="optVariant">
+        <button data-v="normal" data-t="normal"></button>
+        <button data-v="misere" data-t="misere"></button>
+      </div>
+    </div>
+    <div class="opt">
+      <h3 data-t="starts"></h3>
+      <div class="seg" id="optStart">
+        <button data-v="human" data-t="you"></button>
+        <button data-v="cpu" data-t="cpu"></button>
+      </div>
+    </div>
+  </div>
+
+  <div id="bar">
+    <button class="take" id="take" data-t="take" disabled></button>
+    <button id="clear" data-t="clear" disabled></button>
+    <div class="sep"></div>
+    <button id="hintBtn" data-t="hint"></button>
+    <button id="newBtn" data-t="newGame"></button>
+    <div class="sep"></div>
+    <button class="info" id="infoBtn" data-t="how"></button>
+    <button id="lang">EN</button>
+  </div>
+</div>
+
+<div id="attract" data-t="attract"></div>
+<div id="info"><div class="box" id="infoBox"></div></div>
+<div id="confirm"><div class="box">
+  <p data-t="confirmQ"></p>
+  <div class="btns">
+    <button class="primary" id="cYes" data-t="confirmYes"></button>
+    <button id="cNo" data-t="confirmNo"></button>
+  </div>
+</div></div>
+
+<script>
+'use strict';
+window.__err = null;
+window.onerror = (msg, src, line) => { window.__err = msg + ' @' + line; };
+
+// LOGIC-START ------------------------------------------------------------
+// Reine Spiellogik. rows = Array der Hölzchen-Anzahlen je Reihe.
+// Zug = { row, take }  (aus Reihe `row` werden `take` Hölzchen genommen).
+const NimLogic = (() => {
+  const nimSum = rows => rows.reduce((a, b) => a ^ b, 0);
+  const isOver = rows => rows.every(r => r === 0);
+  const applyMove = (rows, m) => rows.map((r, i) => (i === m.row ? r - m.take : r));
+
+  // Gewinnzug oder null, falls die Stellung (bei perfektem Gegner) verloren ist.
+  function optimalMove(rows, misere) {
+    const big = rows.filter(r => r > 1).length;
+    if (misere && big <= 1) {
+      // Misère-Endspiel: dem Gegner eine UNGERADE Zahl von Einzelhölzchen lassen
+      const ones = rows.filter(r => r === 1).length;
+      if (big === 0) {
+        return ones % 2 === 0 && ones > 0 ? { row: rows.indexOf(1), take: 1 } : null;
+      }
+      const i = rows.findIndex(r => r > 1);
+      const keep = ones % 2 === 1 ? 0 : 1;
+      return { row: i, take: rows[i] - keep };
+    }
+    // Satz von Bouton: auf Nim-Summe 0 ziehen
+    const s = nimSum(rows);
+    if (s === 0) return null;
+    for (let i = 0; i < rows.length; i++) {
+      const t = rows[i] ^ s;
+      if (t < rows[i]) return { row: i, take: rows[i] - t };
+    }
+    return null;
+  }
+
+  function randomMove(rows, rnd) {
+    const idx = [];
+    rows.forEach((r, i) => { if (r > 0) idx.push(i); });
+    const row = idx[Math.floor(rnd() * idx.length)];
+    return { row, take: 1 + Math.floor(rnd() * rows[row]) };
+  }
+
+  // In verlorener Stellung: möglichst wenig nehmen (Zeit gewinnen, auf Fehler hoffen)
+  function stallMove(rows) {
+    let row = 0;
+    rows.forEach((r, i) => { if (r > rows[row]) row = i; });
+    return { row, take: 1 };
+  }
+
+  const LEVEL_P = { easy: 0, medium: 0.6, pro: 1 };
+  function computerMove(rows, level, misere, rnd = Math.random) {
+    if (rnd() < LEVEL_P[level]) {
+      const m = optimalMove(rows, misere);
+      if (m) return m;
+      return level === 'pro' ? stallMove(rows) : randomMove(rows, rnd);
+    }
+    return randomMove(rows, rnd);
+  }
+
+  // Wer hat gewonnen, nachdem `mover` die Stellung `rowsAfter` hinterlassen hat?
+  function winnerAfter(rowsAfter, mover, misere) {
+    if (!isOver(rowsAfter)) return null;
+    const other = mover === 'human' ? 'cpu' : 'human';
+    return misere ? other : mover;
+  }
+
+  const SETUPS = { '3-4-5': [3, 4, 5], '1-3-5-7': [1, 3, 5, 7], '2-4-6-8': [2, 4, 6, 8] };
+  function makeSetup(name, rnd = Math.random) {
+    if (SETUPS[name]) return SETUPS[name].slice();
+    // Zufall: 3-5 Reihen mit 1-8 Hölzchen, aufsteigend sortiert
+    const n = 3 + Math.floor(rnd() * 3);
+    const rows = [];
+    for (let i = 0; i < n; i++) rows.push(1 + Math.floor(rnd() * 8));
+    return rows.sort((a, b) => a - b);
+  }
+
+  return { nimSum, isOver, applyMove, optimalMove, randomMove, stallMove,
+           computerMove, winnerAfter, makeSetup, SETUPS };
+})();
+if (typeof module !== 'undefined') module.exports = NimLogic;
+// LOGIC-END --------------------------------------------------------------
+
+// ---------------------------------------------------------------- Texte
+const TEXT = {
+  de: {
+    title: 'Nim', subtitle: 'Wer nimmt das letzte Hölzchen?',
+    you: 'Du', cpu: 'Computer', level: 'Gegner', easy: 'Leicht', medium: 'Mittel', pro: 'Profi',
+    setup: 'Aufstellung', random: 'Zufall', variant: 'Variante', normal: 'Normal', misere: 'Misère',
+    starts: 'Wer beginnt?', take: 'Nehmen', clear: 'Auswahl aufheben', hint: 'Tipp',
+    newGame: 'Neues Spiel', how: 'Wie gewinnt man?', again: 'Nochmal spielen',
+    hintTitle: 'Tipp: die Nim-Summe', attract: 'Tippe hier, um gegen den Computer zu spielen!',
+    yourTurn: 'Du bist dran – tippe ein Hölzchen an.',
+    selected: n => `${n} ${n === 1 ? 'Hölzchen' : 'Hölzchen'} markiert – „Nehmen“ drücken.`,
+    cpuTurn: 'Der Computer überlegt …',
+    cpuTook: (n, r) => `Computer nimmt ${n} aus Reihe ${r}. Du bist dran.`,
+    won: 'Gewonnen!', lost: 'Verloren!',
+    wonText: m => m ? 'Der Computer musste das letzte Hölzchen nehmen.' : 'Du hast das letzte Hölzchen genommen.',
+    lostText: m => m ? 'Du musstest das letzte Hölzchen nehmen.' : 'Der Computer hat das letzte Hölzchen genommen. Probier den Tipp!',
+    row: 'Reihe', sum: 'Nim-Summe',
+    hintZero: 'Die Nim-Summe ist <b>0</b>: Du stehst auf <b>Verlust</b>. Jeder Zug macht sie ungleich 0 – ' +
+              'ein perfekter Gegner gewinnt jetzt. Nimm wenig und hoffe auf einen Fehler!',
+    hintWin: (s, take, row) => `Die Nim-Summe ist <b>${s}</b> ≠ 0: <b>Gewinnstellung!</b> ` +
+              `Nimm <b>${take}</b> aus Reihe <b>${row}</b> (grün). Danach ist die Nim-Summe 0.`,
+    hintMisere: (take, row) => `<b>Misère-Endspiel:</b> Nur noch höchstens eine Reihe hat mehr als ein Hölzchen. ` +
+              `Lass dem Computer eine <b>ungerade</b> Zahl einzelner Hölzchen: Nimm <b>${take}</b> aus Reihe <b>${row}</b> (grün).`,
+    hintMisereLost: '<b>Misère-Endspiel:</b> Es liegt eine ungerade Zahl einzelner Hölzchen – du stehst auf Verlust.',
+    confirmQ: 'Neues Spiel starten? Das aktuelle Spiel geht verloren.',
+    confirmYes: 'Ja, neues Spiel', confirmNo: 'Nein, weiterspielen',
+    compA: 'Computer A (Profi)', compB: 'Computer B (Mittel)',
+    demoTurn: (who, s) => `Vorführung: Computer gegen Computer – tippe, um selbst zu spielen.\n` +
+              `${who} ist am Zug · Nim-Summe ${s}${s === 0 ? ' (Verluststellung)' : ''}`,
+    demoOver: who => `Vorführung: ${who} hat gewonnen.\nTippe, um selbst zu spielen!`,
+    info: `
+      <h2>Nim – wie gewinnt man?</h2>
+      <h3>Die Regeln</h3>
+      <p>Abwechselnd nimmt jeder aus <b>genau einer Reihe</b> beliebig viele Hölzchen, mindestens eins.
+      Wer das <b>letzte</b> Hölzchen nimmt, <b>gewinnt</b>. In der Variante <b>Misère</b> verliert, wer das letzte nimmt.</p>
+      <h3>1. Schritt: Binärzahlen</h3>
+      <p>Schreibe jede Reihe als Summe von Zweierpotenzen 8, 4, 2, 1 – also im Zweiersystem:</p>
+      <div class="eq">3 = 2+1 = 011 &nbsp;&nbsp; 4 = 100 &nbsp;&nbsp; 5 = 4+1 = 101</div>
+      <h3>2. Schritt: Die Nim-Summe</h3>
+      <p>Zähle in jeder Spalte die Einsen. Ist ihre Anzahl <b>ungerade</b>, schreibe 1, sonst 0.
+      Das ist die bitweise Operation <b>XOR</b> (⊕):</p>
+      <div class="eq">011 ⊕ 100 ⊕ 101 = 010 = 2</div>
+      <h3>Satz von Bouton (1901)</h3>
+      <p>Der Spieler am Zug <b>verliert</b> bei perfektem Spiel des Gegners <b>genau dann</b>, wenn die Nim-Summe <b>0</b> ist.
+      Denn: Von Nim-Summe 0 aus macht jeder Zug sie ungleich 0 – und von ungleich 0 aus gibt es immer einen Zug zurück auf 0.
+      Am Ende (alles leer) ist sie 0: Wer immer auf 0 zieht, nimmt das letzte Hölzchen.</p>
+      <p><b>So findest du den Gewinnzug:</b> Berechne die Nim-Summe s. Suche eine Reihe r, für die r ⊕ s kleiner als r ist,
+      und verkleinere sie auf r ⊕ s. Beispiel 3-4-5: s = 2, Reihe 3 → 3 ⊕ 2 = 1, also 2 Hölzchen nehmen.</p>
+      <h3>Misère</h3>
+      <p>Fast dieselbe Strategie: Spiele wie oben, bis nur noch eine Reihe mehr als ein Hölzchen hat.
+      Dann lass dem Gegner eine <b>ungerade</b> Anzahl einzelner Hölzchen übrig.</p>
+      <h3>Warum ist Nim so wichtig?</h3>
+      <p>Nach dem <b>Satz von Sprague und Grundy</b> (1935/1939) verhält sich jedes neutrale Spiel mit endlich vielen Zügen
+      wie ein einzelner Nim-Haufen. Nim ist damit das „Atom“ der kombinatorischen Spieltheorie.</p>
+      <p class="foot">Umgesetzt nach einem Besuchervorschlag aus der Feedback-Abstimmung am Kiosk.
+      Mathematisches Institut, Universität Freiburg.</p>`,
+    close: 'Schließen',
+  },
+  en: {
+    title: 'Nim', subtitle: 'Who takes the last stick?',
+    you: 'You', cpu: 'Computer', level: 'Opponent', easy: 'Easy', medium: 'Medium', pro: 'Expert',
+    setup: 'Start position', random: 'Random', variant: 'Variant', normal: 'Normal', misere: 'Misère',
+    starts: 'Who starts?', take: 'Take', clear: 'Clear selection', hint: 'Hint',
+    newGame: 'New game', how: 'How to win?', again: 'Play again',
+    hintTitle: 'Hint: the nim-sum', attract: 'Tap here to play against the computer!',
+    yourTurn: 'Your turn – tap a stick.',
+    selected: n => `${n} ${n === 1 ? 'stick' : 'sticks'} selected – press “Take”.`,
+    cpuTurn: 'The computer is thinking …',
+    cpuTook: (n, r) => `Computer takes ${n} from row ${r}. Your turn.`,
+    won: 'You won!', lost: 'You lost!',
+    wonText: m => m ? 'The computer had to take the last stick.' : 'You took the last stick.',
+    lostText: m => m ? 'You had to take the last stick.' : 'The computer took the last stick. Try the hint!',
+    row: 'Row', sum: 'Nim-sum',
+    hintZero: 'The nim-sum is <b>0</b>: you are in a <b>losing</b> position. Every move makes it non-zero – ' +
+              'a perfect opponent wins now. Take little and hope for a mistake!',
+    hintWin: (s, take, row) => `The nim-sum is <b>${s}</b> ≠ 0: <b>winning position!</b> ` +
+              `Take <b>${take}</b> from row <b>${row}</b> (green). Afterwards the nim-sum is 0.`,
+    hintMisere: (take, row) => `<b>Misère endgame:</b> at most one row has more than one stick. ` +
+              `Leave the computer an <b>odd</b> number of single sticks: take <b>${take}</b> from row <b>${row}</b> (green).`,
+    hintMisereLost: '<b>Misère endgame:</b> there is an odd number of single sticks – you are losing.',
+    confirmQ: 'Start a new game? The current game will be lost.',
+    confirmYes: 'Yes, new game', confirmNo: 'No, keep playing',
+    compA: 'Computer A (expert)', compB: 'Computer B (medium)',
+    demoTurn: (who, s) => `Demo: computer vs. computer – tap to play yourself.\n` +
+              `${who} to move · nim-sum ${s}${s === 0 ? ' (losing position)' : ''}`,
+    demoOver: who => `Demo: ${who} won.\nTap to play yourself!`,
+    info: `
+      <h2>Nim – how to win?</h2>
+      <h3>The rules</h3>
+      <p>Players take turns removing any number of sticks, at least one, from <b>exactly one row</b>.
+      Whoever takes the <b>last</b> stick <b>wins</b>. In the <b>misère</b> variant, taking the last stick loses.</p>
+      <h3>Step 1: binary numbers</h3>
+      <p>Write each row as a sum of the powers of two 8, 4, 2, 1 – that is, in binary:</p>
+      <div class="eq">3 = 2+1 = 011 &nbsp;&nbsp; 4 = 100 &nbsp;&nbsp; 5 = 4+1 = 101</div>
+      <h3>Step 2: the nim-sum</h3>
+      <p>Count the ones in every column. If the count is <b>odd</b>, write 1, otherwise 0.
+      This is the bitwise operation <b>XOR</b> (⊕):</p>
+      <div class="eq">011 ⊕ 100 ⊕ 101 = 010 = 2</div>
+      <h3>Bouton's theorem (1901)</h3>
+      <p>Against perfect play, the player to move <b>loses exactly when</b> the nim-sum is <b>0</b>.
+      From nim-sum 0, every move makes it non-zero – and from a non-zero nim-sum there is always a move back to 0.
+      At the end (all empty) it is 0: whoever always moves to 0 takes the last stick.</p>
+      <p><b>Finding the winning move:</b> compute the nim-sum s. Find a row r for which r ⊕ s is smaller than r,
+      and reduce it to r ⊕ s. Example 3-4-5: s = 2, row 3 → 3 ⊕ 2 = 1, so take 2 sticks.</p>
+      <h3>Misère</h3>
+      <p>Almost the same strategy: play as above until only one row has more than one stick.
+      Then leave your opponent an <b>odd</b> number of single sticks.</p>
+      <h3>Why does Nim matter?</h3>
+      <p>By the <b>Sprague–Grundy theorem</b> (1935/1939), every impartial game with finitely many moves behaves like a
+      single Nim heap. Nim is the “atom” of combinatorial game theory.</p>
+      <p class="foot">Built from a visitor suggestion in the kiosk feedback poll.
+      Mathematical Institute, University of Freiburg.</p>`,
+    close: 'Close',
+  },
+};
+let lang = 'de';
+const T = () => TEXT[lang];
+
+// ---------------------------------------------------------------- Zustand
+const S = {
+  rows: [], start: [],
+  turn: 'human',            // 'human' | 'cpu' | 'over'
+  sel: null,                // { row, from } – markiert ab Index `from` bis Reihenende
+  busy: false,
+  score: { human: 0, cpu: 0 },
+  level: 'medium', setup: '3-4-5', variant: 'normal', starter: 'human',
+  hint: false, attract: false, statusKey: null, statusArg: null,
+  moved: false,             // wurde im aktuellen Spiel schon gezogen? (für Rückfrage)
+  demoWinner: null,         // Gewinner im Vorführmodus ('human'=B, 'cpu'=A)
+};
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let gameId = 0;             // bricht laufende Computerzüge alter Spiele ab
+
+// ---------------------------------------------------------------- Darstellung
+function render() {
+  const box = $('rows');
+  box.innerHTML = '';
+  S.rows.forEach((n, i) => {
+    const row = document.createElement('div');
+    row.className = 'row' + (n === 0 ? ' empty' : '');
+    const label = document.createElement('div');
+    label.className = 'label';
+    label.innerHTML = `${n}<small>${T().row} ${i + 1}</small>`;
+    row.appendChild(label);
+    const sticks = document.createElement('div');
+    sticks.className = 'sticks';
+    for (let j = 0; j < n; j++) {
+      const st = document.createElement('div');
+      st.className = 'stick';
+      st.dataset.row = i; st.dataset.idx = j;
+      if (S.sel && S.sel.row === i && j >= S.sel.from) st.classList.add('sel');
+      sticks.appendChild(st);
+    }
+    row.appendChild(sticks);
+    box.appendChild(row);
+  });
+  fitSticks();
+  const selCount = S.sel ? S.rows[S.sel.row] - S.sel.from : 0;
+  $('take').disabled = !(S.turn === 'human' && selCount > 0 && !S.busy && !S.attract);
+  $('clear').disabled = selCount === 0;
+  $('hintBtn').classList.toggle('on', S.hint);
+  $('sHuman').textContent = S.score.human;
+  $('sCpu').textContent = S.score.cpu;
+  if (S.turn === 'human' && !S.busy && !S.attract && selCount > 0) setStatus('selected', selCount, false);
+  renderStatus();
+  renderHint();
+}
+
+// Hölzchen-Größe an die freie Spielfläche anpassen (Bildschirmgröße, Reihenzahl,
+// längste Reihe der Startaufstellung – bleibt so während des Spiels stabil).
+function fitSticks() {
+  const board = $('board'), box = $('rows');
+  const W = Math.min(board.clientWidth - 40, 860);
+  const H = board.clientHeight;
+  if (W <= 0 || H <= 0) return;
+  const n = Math.max(1, S.rows.length);
+  const maxN = Math.max(1, ...(S.start.length ? S.start : S.rows));
+  const avail = W - 70 - 22 - 36;                         // Label, Abstand, Innenabstand
+  const sw = Math.max(16, Math.min(40, avail / (maxN + (maxN - 1) * 0.65)));
+  const sg = Math.min(26, sw * 0.65);
+  const rowGap = 0.022 * window.innerHeight;
+  const rowH = (H - 24 - (n - 1) * rowGap) / n;           // 24: Reserve für das Anheben
+  const sh = Math.max(36, Math.min(0.14 * window.innerHeight, rowH - 0.02 * window.innerHeight - 16));
+  box.style.setProperty('--sw', sw.toFixed(1) + 'px');
+  box.style.setProperty('--sg', sg.toFixed(1) + 'px');
+  box.style.setProperty('--sh', sh.toFixed(1) + 'px');
+}
+window.addEventListener('resize', () => render());
+
+function setStatus(key, arg, store = true) {
+  S.statusKey = key; S.statusArg = arg;
+  if (store) renderStatus();
+}
+function renderStatus() {
+  const el = $('status');
+  el.classList.toggle('demo', S.attract);
+  if (S.attract) {
+    const L = T(), name = w => (w === 'cpu' ? L.compA : L.compB);
+    el.textContent = S.turn === 'over' && S.demoWinner
+      ? L.demoOver(name(S.demoWinner))
+      : L.demoTurn(name(S.turn), NimLogic.nimSum(S.rows));
+    return;
+  }
+  const t = T()[S.statusKey];
+  el.textContent = typeof t === 'function' ? t(...[].concat(S.statusArg)) : (t || '');
+}
+
+function stickEls(row, take) {
+  const els = [...document.querySelectorAll(`.stick[data-row="${row}"]`)];
+  return els.slice(els.length - take);
+}
+
+function renderHint() {
+  const card = $('hintCard');
+  const show = S.hint && S.turn === 'human' && !S.attract;
+  card.classList.toggle('show', show);
+  $('left').classList.toggle('open', show);
+  document.querySelectorAll('.stick.hint').forEach(e => e.classList.remove('hint'));
+  if (!show) return;
+  const L = T();
+  const misere = S.variant === 'misere';
+  // Binärtabelle mit Spalten 8 4 2 1
+  const bits = [8, 4, 2, 1];
+  const counts = bits.map(b => S.rows.filter(r => r & b).length);
+  let html = `<tr><th></th>${bits.map(b => `<th>${b}</th>`).join('')}<th></th></tr>`;
+  S.rows.forEach((r, i) => {
+    html += `<tr><td>${L.row} ${i + 1}</td>` +
+      bits.map(b => `<td class="bit">${r & b ? 1 : 0}</td>`).join('') +
+      `<td class="dec">= ${r}</td></tr>`;
+  });
+  const s = NimLogic.nimSum(S.rows);
+  html += `<tr class="sum"><td>⊕</td>` +
+    bits.map((b, k) => `<td class="bit${counts[k] % 2 ? ' odd' : ''}">${s & b ? 1 : 0}</td>`).join('') +
+    `<td class="dec">= ${s}</td></tr>`;
+  $('binTable').innerHTML = html;
+
+  const big = S.rows.filter(r => r > 1).length;
+  const m = NimLogic.optimalMove(S.rows, misere);
+  let text;
+  if (misere && big <= 1) text = m ? L.hintMisere(m.take, m.row + 1) : L.hintMisereLost;
+  else text = m ? L.hintWin(s, m.take, m.row + 1) : L.hintZero;
+  $('hintText').innerHTML = text;
+  requestAnimationFrame(fitSticks);
+  if (m) stickEls(m.row, m.take).forEach(e => e.classList.add('hint'));
+}
+
+function showBanner(winner) {
+  const L = T(), misere = S.variant === 'misere';
+  $('bannerTitle').textContent = winner === 'human' ? L.won : L.lost;
+  $('bannerTitle').style.color = winner === 'human' ? 'var(--green)' : 'var(--orange)';
+  $('bannerText').textContent = winner === 'human' ? L.wonText(misere) : L.lostText(misere);
+  $('banner').classList.add('show');
+}
+
+// ---------------------------------------------------------------- Ablauf
+async function animateMove(m, cls) {
+  const els = stickEls(m.row, m.take);
+  if (cls) { els.forEach(e => e.classList.add(cls)); await sleep(650); }
+  els.forEach(e => e.classList.add('leaving'));
+  await sleep(450);
+}
+
+async function doMove(m, mover) {
+  const id = gameId;
+  S.busy = true; S.sel = null;
+  render();
+  await animateMove(m, mover === 'cpu' || S.attract ? 'cpu' : null);
+  if (id !== gameId) return;
+  S.rows = NimLogic.applyMove(S.rows, m);
+  S.busy = false;
+  if (!S.attract) S.moved = true;
+  const w = NimLogic.winnerAfter(S.rows, mover, S.variant === 'misere');
+  if (w) {
+    S.turn = 'over';
+    if (!S.attract) { S.score[w]++; showBanner(w); }
+    else S.demoWinner = w;
+    setStatus(S.attract ? null : (w === 'human' ? 'won' : 'lost'));
+    render();
+    if (S.attract) { await sleep(2500); if (id === gameId && S.attract) attractGame(); }
+    return;
+  }
+  S.turn = mover === 'human' ? 'cpu' : 'human';
+  if (S.attract) { render(); await sleep(900); if (id === gameId) cpuTurn(); return; }
+  if (S.turn === 'cpu') { setStatus('cpuTurn'); render(); cpuTurn(); }
+  else { setStatus('cpuTook', [m.take, m.row + 1]); render(); }
+}
+
+async function cpuTurn() {
+  const id = gameId;
+  await sleep(S.attract ? 600 : 900);
+  if (id !== gameId) return;
+  // Vorführmodus: Profi gegen Mittel, damit es spannend bleibt
+  const level = S.attract ? (S.turn === 'human' ? 'medium' : 'pro') : S.level;
+  const m = NimLogic.computerMove(S.rows, level, S.variant === 'misere');
+  doMove(m, S.attract ? S.turn : 'cpu');
+}
+
+function newGame() {
+  gameId++;
+  S.start = NimLogic.makeSetup(S.setup);
+  S.rows = S.start.slice();
+  S.sel = null; S.busy = false; S.moved = false;
+  $('banner').classList.remove('show');
+  S.turn = S.starter;
+  if (S.turn === 'cpu') { setStatus('cpuTurn'); render(); cpuTurn(); }
+  else { setStatus('yourTurn'); render(); }
+}
+
+// ---------------------------------------------------------------- Bedienung
+// onTap: reagiert sofort auf pointerup (Touch/Maus/Stift, kein Klick-Verzug)
+// und unterdrückt den danach vom Browser erzeugten click – keine Doppelauslösung.
+// Reine click-Events (z. B. Tastatur, Barrierefreiheit) funktionieren weiterhin.
+let suppressClickUntil = 0;
+function onTap(el, fn) {
+  let down = null;
+  el.addEventListener('pointerdown', e => {
+    if (!e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    down = { x: e.clientX, y: e.clientY, target: e.target };
+  });
+  el.addEventListener('pointercancel', () => { down = null; });
+  el.addEventListener('pointerup', e => {
+    if (!down || !e.isPrimary) return;
+    const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+    const target = down.target; down = null;
+    if (moved > 24 || performance.now() < suppressClickUntil) return;
+    suppressClickUntil = performance.now() + 400;
+    fn({ target });
+  });
+  el.addEventListener('click', e => {
+    if (performance.now() < suppressClickUntil) { e.preventDefault(); return; }
+    fn(e);
+  });
+}
+document.addEventListener('contextmenu', e => e.preventDefault());   // Long-Press-Menü
+document.addEventListener('dragstart', e => e.preventDefault());
+document.addEventListener('selectstart', e => e.preventDefault());
+
+onTap($('rows'), e => {
+  const st = e.target.closest('.stick');
+  if (!st || S.turn !== 'human' || S.busy || S.attract) return;
+  const row = Number(st.dataset.row), from = Number(st.dataset.idx);
+  if (S.sel && S.sel.row === row && S.sel.from === from) S.sel = null;   // erneut tippen = abwählen
+  else S.sel = { row, from };
+  if (!S.sel) setStatus('yourTurn');
+  render();
+});
+onTap($('take'), () => {
+  if (!S.sel || S.turn !== 'human' || S.busy) return;
+  const m = { row: S.sel.row, take: S.rows[S.sel.row] - S.sel.from };
+  if (m.take > 0) doMove(m, 'human');
+});
+onTap($('clear'), () => {
+  if ($('clear').disabled) return;
+  S.sel = null; setStatus('yourTurn'); render();
+});
+onTap($('hintBtn'), () => { S.hint = !S.hint; render(); });
+onTap($('newBtn'), () => confirmIfRunning(newGame));
+onTap($('again'), newGame);
+
+// Rückfrage, wenn ein laufendes Spiel (mind. ein Zug) verloren ginge
+let pendingAction = null;
+function gameRunning() { return S.moved && S.turn !== 'over' && !S.attract; }
+function confirmIfRunning(action) {
+  if (!gameRunning()) { action(); return; }
+  pendingAction = action;
+  $('confirm').classList.add('open');
+}
+function closeConfirm(run) {
+  $('confirm').classList.remove('open');
+  const a = pendingAction; pendingAction = null;
+  if (run && a) a();
+}
+onTap($('cYes'), () => closeConfirm(true));
+onTap($('cNo'), () => closeConfirm(false));
+onTap($('confirm'), e => { if (e.target.id === 'confirm') closeConfirm(false); });
+
+function segment(id, key) {
+  const el = $(id);
+  const sync = () => el.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === S[key]));
+  onTap(el, e => {
+    const b = e.target.closest('button');
+    if (!b || b.dataset.v === S[key]) return;
+    confirmIfRunning(() => { S[key] = b.dataset.v; sync(); newGame(); });
+  });
+  sync();
+}
+segment('optLevel', 'level');
+segment('optSetup', 'setup');
+segment('optVariant', 'variant');
+segment('optStart', 'starter');
+
+function applyLang() {
+  document.documentElement.lang = lang;
+  document.querySelectorAll('[data-t]').forEach(el => {
+    const v = T()[el.dataset.t];
+    if (typeof v === 'string') el.textContent = v;
+  });
+  $('lang').textContent = lang === 'de' ? 'EN' : 'DE';
+  $('infoBox').innerHTML = T().info + `<button class="info">${T().close}</button>`;
+  if ($('banner').classList.contains('show')) {
+    const w = $('bannerTitle').style.color.includes('green') ? 'human' : 'cpu';
+    showBanner(w);
+  }
+  render();
+}
+onTap($('lang'), () => { lang = lang === 'de' ? 'en' : 'de'; applyLang(); });
+function toggleInfo(open) { $('info').classList.toggle('open', open); }
+window.toggleInfo = toggleInfo;
+onTap($('infoBtn'), () => toggleInfo(true));
+onTap($('info'), e => {
+  if (e.target.id === 'info') toggleInfo(false);
+  else if (e.target.closest('button.info')) toggleInfo(false);
+});
+
+// ---------------------------------------------------------------- Vorführmodus
+// Ohne Berührung spielt der Computer langsam gegen sich selbst; die erste
+// Berührung beendet das und startet ein neues Spiel.
+const IDLE_MS = 60000;
+let lastInput = performance.now();
+function attractGame() {
+  gameId++;
+  S.rows = NimLogic.makeSetup('random');
+  S.start = S.rows.slice();
+  S.sel = null; S.busy = false; S.hint = false; S.turn = 'cpu'; S.demoWinner = null;
+  $('banner').classList.remove('show');
+  setStatus(null);
+  render();
+  cpuTurn();
+}
+function startAttract() {
+  S.attract = true;
+  document.body.classList.add('demo');
+  toggleInfo(false);
+  closeConfirm(false);
+  $('attract').classList.add('show');
+  attractGame();
+}
+document.addEventListener('pointerdown', e => {
+  lastInput = performance.now();
+  if (S.attract) {
+    S.attract = false;
+    document.body.classList.remove('demo');
+    $('attract').classList.remove('show');
+    e.stopPropagation(); e.preventDefault();
+    suppressClickUntil = performance.now() + 700;   // Folge-Tap/Klick nicht als Spielzug werten
+    newGame();
+  }
+}, true);
+setInterval(() => {
+  if (!S.attract && performance.now() - lastInput > IDLE_MS) startAttract();
+}, 1000);
+
+applyLang();
+newGame();
+</script>
+</body>
+</html>

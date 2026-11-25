@@ -1,0 +1,17 @@
+#!/bin/bash
+# =============================================================================
+# Start-Skript für Nim (Galadriel Submodul)
+# =============================================================================
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_ROOT="$( cd "${SCRIPT_DIR}/.." && pwd )"
+LOGFILE="${PROJECT_ROOT}/logs/nim.log"
+
+export PATH="${PROJECT_ROOT}/bin:${PATH:-}"
+
+if [[ -f "${PROJECT_ROOT}/bin/dune-ash-common.sh" ]]; then
+    source "${PROJECT_ROOT}/bin/dune-ash-common.sh"
+    setup_logging "$LOGFILE" "nim"
+fi
+
+mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null || LOGFILE=/dev/null
+python3 "${SCRIPT_DIR}/show.py" >> "$LOGFILE" 2>&1
